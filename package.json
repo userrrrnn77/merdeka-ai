@@ -11,8 +11,8 @@
   "scripts": {
     "dev": "bun --preload ./preload.ts --watch index.ts",
     "start": "bun --preload ./preload.ts index.ts",
-    "build": "systemd-run --user --scope -p CPUQuota=50% -p MemoryMax=3G tsc",
-    "vercel-build": "tsc"
+    "local-build": "systemd-run --user --scope -p CPUQuota=50% -p MemoryMax=3G tsc",
+    "build": "tsc"
   },
   "devDependencies": {
     "@types/bun": "latest",
