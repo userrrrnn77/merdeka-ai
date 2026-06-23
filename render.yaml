@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: merdeka-ai-backend
+    env: node
+    plan: free
+    buildCommand: bun install && bun run build
+    startCommand: bun run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
