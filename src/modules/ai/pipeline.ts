@@ -7,8 +7,8 @@
 // Pipeline ini fokus ke:
 //   Semantic Cache Check -> RAG Engine -> LLM Model(s) -> Basic Output
 //   Filter -> Generative UI resolve -> return PipelineFinalResult
-//   (SSE streaming-nya sendiri di stream.ts, pipeline ini return hasil
-//   lengkap yang lalu di-"replay" sebagai stream oleh stream.ts)
+//   (pengiriman ke client — sekarang JSON response tunggal, bukan SSE —
+//   di-handle oleh stream.ts, pipeline ini cukup return hasil lengkap)
 
 import {
   checkSemanticCache,
@@ -17,7 +17,7 @@ import {
 import { retrieveRAGContext } from "../knowledge/rag.service.js";
 import { buildSystemPrompt } from "./prompts/system.prompt.js";
 import { generateDraft } from "./models/drafter.js";
-import { generateCritique } from "./models/critic.js";
+import { generateDraftAndCritique } from "./models/draftCritic.js";
 import { generateFinal } from "./models/finalizer.js";
 import { validateLLMOutput } from "../filter/output.filter.js";
 import { resolveUIBlock } from "./ui/uiBlock.orchestrator.js";
@@ -46,18 +46,12 @@ async function runFreeTierPipeline(
 }
 
 /**
- * Premium tier: RAG -> Model A (draft) + Model B (kritik) paralel via
- * Promise.all() -> Model C (final). Sesuai Section 4 planning — maksimal
- * 2-3 model, step analisis & kritik jalan paralel untuk pangkas latency.
- *
- * CATATAN: critic butuh draft duluan untuk bisa mengkritik, jadi yang
- * benar-benar paralel adalah [drafter] dijalankan dulu, lalu [critic]
- * jalan berdasarkan draft itu. Untuk memenuhi semangat "paralel" dari
- * planning tanpa melanggar dependency logis, drafter dijalankan single
- * pass, dan critic + (opsional) langkah analisis tambahan lain yang TIDAK
- * bergantung draft bisa paralel di Promise.all() jika ditambah nanti.
- * Saat ini pipeline premium = draft -> critic -> final (sequential by
- * necessity), tetap dalam batas "maksimal 2-3 model" dari planning.
+ * Premium tier: RAG -> (draft+kritik dalam 1 call) -> final. 2 sequential
+ * LLM call, bukan 3. DIUBAH dari draft->critic->final terpisah supaya
+ * muat di limit durasi function Vercel Hobby (10s) — critic tetap butuh
+ * draft duluan (dependency logis, tidak bisa Promise.all() beneran),
+ * jadi solusinya draft+critique digabung jadi satu call sekaligus,
+ * bukan dipaksa paralel.
  */
 async function runPremiumTierPipeline(
   context: PipelineContext,
@@ -70,16 +64,15 @@ async function runPremiumTierPipeline(
 }> {
   const startTime = Date.now();
 
-  const draft = await generateDraft(systemPrompt, context.query);
-  const critique = await generateCritique(context.query, draft.text);
+  const draftCritic = await generateDraftAndCritique(context.query);
   const final = await generateFinal(
     systemPrompt,
     context.query,
-    draft.text,
-    critique.text,
+    draftCritic.draft,
+    draftCritic.critique,
   );
 
-  const totalTokens = draft.tokensUsed + critique.tokensUsed + final.tokensUsed;
+  const totalTokens = draftCritic.tokensUsed + final.tokensUsed;
   const totalLatency = Date.now() - startTime;
 
   return {
@@ -135,7 +128,7 @@ export async function runPipeline(
       ? await runPremiumTierPipeline(context, systemPrompt)
       : await runFreeTierPipeline(context, systemPrompt);
 
-  // 5. Basic Output Filter — validasi sebelum di-stream (Section 5)
+  // 5. Basic Output Filter — validasi sebelum dikirim ke client (Section 5)
   const isOutputValid = validateLLMOutput(generation.text);
 
   if (!isOutputValid) {
@@ -147,7 +140,7 @@ export async function runPipeline(
 
   // 6. Generative UI — resolve UI block (hybrid: dipanggil SETELAH teks
   // utama selesai di-generate, sebelum di-return ke stream.ts yang akan
-  // mengirim event ui_block sebelum event done)
+  // mengirim ui_block bersamaan dengan responseText dalam satu JSON)
   const uiBlock = await resolveUIBlock(context.query, generation.text);
 
   // 7. Store ke semantic cache (no-op otomatis kalau isPersonalResponse)

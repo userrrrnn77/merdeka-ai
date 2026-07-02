@@ -1,8 +1,10 @@
 // src/controllers/chat.controller.ts
-// Endpoint utama: POST /api/chat/stream
-// Mengikat: idempotency check (Section 4B) -> SSE setup (Section 4A) ->
-// pipeline AI (Section 4) -> persist message + usage_log + learning_log ->
-// event done dengan remaining_quota.
+// Endpoint utama: POST /api/chat/stream (nama route dipertahankan, TAPI
+// respons SEKARANG non-streaming/JSON tunggal — diubah untuk kompatibel
+// Vercel Hobby free tier, lihat stream.ts).
+// Mengikat: idempotency check (Section 4B) -> pipeline AI (Section 4) ->
+// persist message + usage_log + learning_log -> response JSON dengan
+// remaining_quota.
 
 import type { Response } from "express";
 import type { TieredRequest } from "../middlewares/userTier.middleware.js";
@@ -19,7 +21,7 @@ import {
   setInitialTitleIfNeeded,
   touchLastActivity,
 } from "../modules/conversation/conversation.service.js";
-import { setupSSEHeaders, streamPipelineResult } from "../modules/ai/stream.js";
+import { streamPipelineResult } from "../modules/ai/stream.js";
 import { User } from "../models/user.model.js";
 import { env } from "../config/env.js";
 import type { ChatRequestBody } from "../types/chat.types.js";
@@ -54,15 +56,11 @@ export async function streamChatHandler(
     logger.info(
       `[ChatController] client_message_id "${body.client_message_id}" sudah pernah diproses, return existing.`,
     );
-    setupSSEHeaders(res);
-    res.write(`data: ${JSON.stringify({ chunk: existing.content })}\n\n`);
-    if (existing.uiBlock) {
-      res.write(`event: ui_block\ndata: ${JSON.stringify({ ui_block: existing.uiBlock })}\n\n`);
-    }
-    res.write(
-      `event: done\ndata: ${JSON.stringify({ remaining_quota: estimateRemainingQuota(tier) })}\n\n`,
-    );
-    res.end();
+    res.status(200).json({
+      chunk: existing.content,
+      ui_block: existing.uiBlock ?? null,
+      remaining_quota: estimateRemainingQuota(tier),
+    });
     return;
   }
 
@@ -124,9 +122,7 @@ export async function streamChatHandler(
     userProfileInjected: !!userDoc?.jenjang,
   };
 
-  // 5. Setup SSE & jalankan pipeline + stream
-  setupSSEHeaders(res);
-
+  // 5. Jalankan pipeline & kirim hasil sebagai JSON tunggal
   await streamPipelineResult({
     res,
     context: pipelineContext,
